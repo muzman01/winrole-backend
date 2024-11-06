@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: horse-redis-deployment
+  labels:
+    app: horse-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: horse-redis
+  template:
+    metadata:
+      labels:
+        app: horse-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:6.2 # Redis'in belirttiğiniz versiyonu
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              memory: "256Mi" # Minimum bellek gereksinimi
+              cpu: "250m" # Minimum CPU gereksinimi
+            limits:
+              memory: "1Gi" # Maksimum bellek limiti
+              cpu: "1000m" # Maksimum CPU limiti
+          volumeMounts:
+            - name: redis-storage
+              mountPath: /data
+      volumes:
+        - name: redis-storage
+          emptyDir: {} # Geçici bir disk alanı, veriler burada depolanacak
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: horse-redis-service # Servisin adı burada redis ile uyumlu olmalı
+spec:
+  selector:
+    app: horse-redis # Redis'e işaret eden etiket ile eşleşmeli
+  ports:
+    - protocol: TCP
+      port: 6379 # Servis portu
+      targetPort: 6379 # Redis container portuna yönlendiriyor
+  type: ClusterIP # Kendi iç ağındaki erişim için kullanılıyor
