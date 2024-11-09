@@ -5,6 +5,7 @@ mod models;      // Modellerinizi içe aktarın
 mod repository;  // User repository'nizi içe aktarın
 mod jwt;         // JWT işlemleriniz
 mod services;
+use rand::Rng;
 use mongodb::bson::{Binary, Bson};
 use rocket::{http::Status, serde::{json::Json, Deserialize, Serialize}, State};
 use services::redis_service::setup_redis; 
@@ -96,8 +97,22 @@ async fn create_user(
 
     // Aynı telegram_id ile kullanıcı var mı kontrol et
     match user_repo.find_user_by_telegram_id(new_user.telegram_id).await {
-        Ok(Some(existing_user)) => {
+        Ok(Some(mut existing_user)) => {
+
+            if let Some(ref mut boost) = existing_user.boost {
+                let current_time = get_current_unix_timestamp(); // Şu anki zaman damgası
+                let boost_end_time = boost.start_time + (boost.duration_days as i64 * 24 * 60 * 60); // Günleri saniyeye çevir
+
+                if current_time >= boost_end_time {
+                    // Boost süresi dolmuş, boostu sıfırla
+                    existing_user.boost = None;
+                    println!("Boost süresi dolmuş, boost durduruldu.");
+                    user_repo.remove_boost(existing_user.telegram_id).await.unwrap(); // Boost'u kaldır
+                }
+            }
+
             // Kullanıcı zaten varsa, onu geri döndür ve yeni kayıt yapma
+        
             let token = jwt::jwt_helper::create_token(existing_user.telegram_id)
                 .unwrap_or_else(|_| "Error creating token".to_string());
                 
@@ -145,6 +160,14 @@ async fn create_user(
             }))
         }
     }
+}
+
+
+fn get_current_unix_timestamp() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs() as i64
 }
 
 // Telegram ID'ye göre kullanıcıyı alma
@@ -302,6 +325,75 @@ async fn join_table(
     }
 }
 
+#[post("/salons/<salon_id>/tables/<table_id>/join_with_bots", format = "json", data = "<telegram_data>")]
+async fn join_table_with_bots(
+    salon_id: i32,
+    table_id: i32,
+    telegram_data: Json<TelegramId>,
+    salon_repo: &State<SalonRepository>
+) -> (Status, Json<ApiResponse<String>>) {
+    let telegram_id = telegram_data.telegram_id;
+
+    // Kullanıcı zaten başka bir masada mı kontrol et
+    if let Ok(Some(salon)) = salon_repo.find_salon_by_id(salon_id).await {
+        for table in &salon.tables {
+            if table.players.iter().any(|p| p.player_id == telegram_id) {
+                return (Status::Conflict, Json(ApiResponse {
+                    message: format!("409: Conflict - Player {} is already seated at a table.", telegram_id),
+                    result: None,
+                }));
+            }
+        }
+
+        // Masaya kullanıcı ve 3 bot ekleme işlemi
+        let mut updated_salon = salon;
+        if let Some(table) = updated_salon.tables.iter_mut().find(|t| t.table_id == table_id) {
+            // Ana kullanıcıyı ekle
+            table.players.push(Player {
+                player_id: telegram_id,
+                has_paid: false,
+                dice_rolls: vec![],
+                is_active: true,
+            });
+
+            // 3 bot oyuncu ekle
+            for _ in 0..3 {
+                let fake_telegram_id = generate_fake_telegram_id();
+                table.players.push(Player {
+                    player_id: fake_telegram_id,
+                    has_paid: false,
+                    dice_rolls: vec![],
+                    is_active: true,
+                });
+            }
+
+            // Güncellenmiş salon verisini kaydet
+            salon_repo.update_salon(updated_salon).await.unwrap();
+
+            return (Status::Ok, Json(ApiResponse {
+                message: format!("Player {} and 3 bots successfully joined table {}", telegram_id, table_id),
+                result: None,
+            }));
+        } else {
+            return (Status::NotFound, Json(ApiResponse {
+                message: format!("404: Not Found - Table {} not found in Salon {}", table_id, salon_id),
+                result: None,
+            }));
+        }
+    } else {
+        return (Status::NotFound, Json(ApiResponse {
+            message: format!("404: Not Found - Salon {} not found", salon_id),
+            result: None,
+        }));
+    }
+}
+
+// Rastgele sahte bir telegram_id üretmek için yardımcı fonksiyon
+fn generate_fake_telegram_id() -> i64 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(1000000..9999999) // 1,000,000 ile 9,999,999 arasında rastgele sayı
+}
+
 #[post("/salons/<salon_id>/tables/<table_id>/leave", format = "json", data = "<telegram_data>")]
 async fn leave_table(
     salon_id: i32,
@@ -348,6 +440,156 @@ async fn leave_table(
     }
 }
 
+#[post("/salons/<salon_id>/tables/<table_id>/leave_bot", format = "json", data = "<telegram_data>")]
+async fn leave_table_bot(
+    salon_id: i32,
+    table_id: i32,
+    telegram_data: Json<TelegramId>,
+    salon_repo: &State<SalonRepository>
+) -> (Status, Json<ApiResponse<String>>) {
+    let telegram_id = telegram_data.telegram_id;
+
+    // Salonu bulma ve kontrol etme
+    if let Ok(Some(salon)) = salon_repo.find_salon_by_id(salon_id).await {
+        let mut updated_salon = salon;
+
+        // Masayı bulma ve oyuncunun o masada olup olmadığını kontrol etme
+        if let Some(table) = updated_salon.tables.iter_mut().find(|t| t.table_id == table_id) {
+            // Oyuncuyu ve botları masadan kaldır
+            let initial_player_count = table.players.len();
+
+            // Gerçek kullanıcıyı ve botları filtreleyerek sil
+            table.players.retain(|p| {
+                !(p.player_id == telegram_id || is_bot_id(p.player_id))
+            });
+
+            // Eğer oyuncu sayısı değişmediyse, kullanıcı bulunamadı demektir
+            if initial_player_count == table.players.len() {
+                return (Status::NotFound, Json(ApiResponse {
+                    message: format!("404: Not Found - Player {} not found at table {}", telegram_id, table_id),
+                    result: None,
+                }));
+            }
+
+            // Salonu güncelle
+            salon_repo.update_salon(updated_salon).await.unwrap();
+
+            return (Status::Ok, Json(ApiResponse {
+                message: format!("Player {} and associated bots successfully left table {}", telegram_id, table_id),
+                result: None,
+            }));
+        } else {
+            return (Status::NotFound, Json(ApiResponse {
+                message: format!("404: Not Found - Table {} not found in Salon {}", table_id, salon_id),
+                result: None,
+            }));
+        }
+    } else {
+        return (Status::NotFound, Json(ApiResponse {
+            message: format!("404: Not Found - Salon {} not found", salon_id),
+            result: None,
+        }));
+    }
+}
+
+
+#[post("/salons/<salon_id>/tables/<table_id>/ready_bots", format = "json", data = "<telegram_data>")]
+async fn ready_table_bots(
+    salon_id: i32,
+    table_id: i32,
+    telegram_data: Json<TelegramId>,
+    salon_repo: &State<SalonRepository>,
+    user_repo: &State<UserRepository> // Add UserRepository to access user's game_pass
+) -> (Status, Json<ApiResponse<String>>) {
+    let telegram_id = telegram_data.telegram_id;
+
+    // Determine required game passes based on salon_id
+    let required_game_passes = match salon_id {
+        1 => 1,
+        2 => 3,
+        3 => 5,
+        4 => 10,
+        5 => 15,
+        6 => 25,
+        _ => 0, // Default value if salon_id does not match any case
+    };
+
+    // Fetch user data to check game_pass count
+    if let Ok(Some(mut user)) = user_repo.find_user_by_telegram_id(telegram_id).await {
+        // Handle Option<i32> for game_pass safely
+        if let Some(game_pass) = user.game_pass {
+            if game_pass < required_game_passes {
+                return (Status::BadRequest, Json(ApiResponse {
+                    message: format!("Insufficient game passes. You need {} game passes to join salon {}", required_game_passes, salon_id),
+                    result: None,
+                }));
+            }
+
+            // Deduct the required game passes
+            user.game_pass = Some(game_pass - required_game_passes);
+            user_repo.update_user_game_pass(&user).await.unwrap();
+        } else {
+            return (Status::BadRequest, Json(ApiResponse {
+                message: "Game pass information is unavailable.".to_string(),
+                result: None,
+            }));
+        }
+
+        // Salon and table retrieval and update logic
+        if let Ok(Some(salon)) = salon_repo.find_salon_by_id(salon_id).await {
+            let mut updated_salon = salon;
+
+            // Find the table and update player's has_paid status
+            if let Some(table) = updated_salon.tables.iter_mut().find(|t| t.table_id == table_id) {
+                // Kullanıcıyı "ready" yap
+                if let Some(player) = table.players.iter_mut().find(|p| p.player_id == telegram_id) {
+                    player.has_paid = true;
+                } else {
+                    return (Status::NotFound, Json(ApiResponse {
+                        message: format!("404: Not Found - Player {} not found at table {}", telegram_id, table_id),
+                        result: None,
+                    }));
+                }
+
+                // Masadaki tüm botları da "ready" yap
+                for bot in table.players.iter_mut().filter(|p| is_bot_id(p.player_id)) {
+                    bot.has_paid = true;
+                }
+
+                // Save the updated salon
+                salon_repo.update_salon(updated_salon).await.unwrap();
+
+                return (Status::Ok, Json(ApiResponse {
+                    message: format!("Player {} and associated bots are now ready at table {}", telegram_id, table_id),
+                    result: None,
+                }));
+            } else {
+                return (Status::NotFound, Json(ApiResponse {
+                    message: format!("404: Not Found - Table {} not found in Salon {}", table_id, salon_id),
+                    result: None,
+                }));
+            }
+        } else {
+            return (Status::NotFound, Json(ApiResponse {
+                message: format!("404: Not Found - Salon {} not found", salon_id),
+                result: None,
+            }));
+        }
+    } else {
+        return (Status::NotFound, Json(ApiResponse {
+            message: format!("404: Not Found - User with telegram_id {} not found", telegram_id),
+            result: None,
+        }));
+    }
+}
+
+
+// Bot olup olmadığını kontrol eden fonksiyon
+fn is_bot_id(telegram_id: i64) -> bool {
+    (1000000..9999999).contains(&telegram_id)
+}
+
+
 #[post("/salons/<salon_id>/tables/<table_id>/ready", format = "json", data = "<telegram_data>")]
 async fn ready_table(
     salon_id: i32,
@@ -365,6 +607,7 @@ async fn ready_table(
         3 => 5,
         4 => 10,
         5 => 15,
+        6 => 25,
         _ => 0, // Default value if salon_id does not match any case
     };
 
@@ -1121,13 +1364,16 @@ async fn track_user(
                 },
             });
 
-            // Referans seviyesini güncelleme ve ödül kontrolü
+          // Referans seviyesini güncelleme ve ödül kontrolü
             if references.level1.is_started && !references.level1.is_finished {
                 references.level1.current_reference += 1;
+                println!("Level 1: Current references = {}", references.level1.current_reference);
+                
                 if references.level1.current_reference >= references.level1.total_reference_required {
                     references.level1.is_finished = true;
                     references.level2.is_started = true;
                     referrer.game_pass = Some(referrer.game_pass.unwrap_or(0) + 1);
+                    println!("Level 1 completed. Game Pass updated to {}", referrer.game_pass.unwrap_or(0));
                 }
             } else if references.level2.is_started && !references.level2.is_finished {
                 references.level2.current_reference += 1;
@@ -1143,10 +1389,13 @@ async fn track_user(
                     referrer.ton_amount = Some(referrer.ton_amount.unwrap_or(0.0) + 15.0); // f64 güncellemesi
                 }
             }
-
-            // Yeni kullanıcıyı friends listesine ekle
-            let friends = referrer.friends.get_or_insert(vec![]);
-            friends.push(new_user_id);
+          // Yeni kullanıcıyı friends listesine eklemeden önce kontrol et
+          let friends = referrer.friends.get_or_insert(vec![]);
+          if !friends.contains(&new_user_id) { // Eğer yeni kullanıcı arkadaşlar listesinde yoksa
+              friends.push(new_user_id);
+          } else {
+              println!("Kullanıcı zaten friends listesinde: {}", new_user_id);
+          }
 
             // Güncellenmiş referans veren kullanıcıyı kaydet
             match user_repo.update_user_references_and_friends(&referrer).await {
@@ -1374,7 +1623,10 @@ async fn rocket() -> _ {
             deposit_ton,
             apply_boost,
             buy_item_system_ton,
-            purchase_item
+            purchase_item,
+            join_table_with_bots,
+            ready_table_bots,
+            leave_table_bot
         ])
         .register("/", catchers![not_found]) // 404 yakalayıcı
 }

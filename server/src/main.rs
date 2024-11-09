@@ -4,6 +4,7 @@ mod models;
 mod config;
 
 use config::mongo_config::setup_mongo;
+use services::live_game_socket_services_bot::run_live_game_websocket_server_bots;
 use services::websocket_service::run_websocket_server;
 use services::salon_websocket_service::run_salon_websocket_server; // Salon için WebSocket fonksiyonu
 use services::redis_service::setup_redis;
@@ -18,6 +19,7 @@ async fn main() {
     let mongo_client_clone = mongo_client.clone(); // Clone yapıyoruz
     let mongo_client_clone_clone = mongo_client.clone(); // Clone yapıyoruz
     let mongo_client_clone_clone_clone = mongo_client.clone(); // Clone yapıyoruz
+    let mongo_client_clone_clone_clone_clone = mongo_client.clone(); // Clone yapıyoruz
 
     let user_socket = tokio::spawn(async move {
         run_websocket_server(mongo_client_clone).await;
@@ -31,5 +33,9 @@ async fn main() {
         run_live_game_websocket_server(&mongo_client_clone_clone_clone).await;
 
     });
-    let _ = tokio::join!(user_socket, salon_socket,live_game_socket);
+    let live_game_socket_bot = tokio::spawn(async move {
+        run_live_game_websocket_server_bots(&mongo_client_clone_clone_clone_clone).await;
+
+    });
+    let _ = tokio::join!(user_socket, salon_socket,live_game_socket,live_game_socket_bot);
 }

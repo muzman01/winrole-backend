@@ -166,6 +166,7 @@ dependencies = [
  "futures",
  "jsonwebtoken",
  "mongodb",
+ "rand",
  "redis",
  "reqwest",
  "rocket",

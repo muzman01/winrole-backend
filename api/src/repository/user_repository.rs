@@ -155,7 +155,16 @@ impl UserRepository {
             }
         }
     }
+    pub async fn remove_boost(&self, telegram_id: i64) -> Result<()> {
+        let filter = doc! { "telegram_id": telegram_id };
+        let update = doc! {
+            "$set": {
+                "boost": Bson::Null // Boost'u kaldırmak için null yapıyoruz
+            }
+        };
     
+        self.collection.update_one(filter, update, None).await.map(|_| ())
+    }
     pub async fn add_item_to_user_market(
         &self,
         telegram_id: i64,
@@ -275,15 +284,17 @@ impl UserRepository {
             "$set": {
                 "references": bson::to_bson(&user.references).unwrap_or(Bson::Null),
                 "friends": bson::to_bson(&user.friends).unwrap_or(Bson::Null),
+                "game_pass": user.game_pass, // game_pass güncellemesi
             }
         };
-
+    
         let options = FindOneAndUpdateOptions::builder()
             .return_document(ReturnDocument::After)
             .build();
-
+    
         self.collection.find_one_and_update(filter, update, options).await.map(|_| ())
     }
+    
     pub async fn update_user_ton_amount(&self, user: &User) -> Result<()> {
         let filter = doc! { "telegram_id": user.telegram_id };
         let update = doc! {
