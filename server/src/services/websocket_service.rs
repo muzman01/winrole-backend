@@ -1,39 +1,93 @@
 use tokio::net::TcpListener;
+use tokio::time::{self, Duration};
 use tokio_tungstenite::accept_async;
-use futures_util::{StreamExt, SinkExt};  // futures_util'i ekledik
+use futures_util::{StreamExt, SinkExt};
 use serde_json::json;
 use mongodb::Client;
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::Message;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use crate::repository::user_repository::UserRepository;
 
 #[derive(Serialize, Deserialize)]
 struct IncomingMessage {
     telegram_id: i64,
-    click_power: Option<i32>, // tıklama gücü isteğe bağlı olabilir
+    click_power: Option<i32>,
 }
 
 pub async fn run_websocket_server(mongo_client: Client) {
     let addr = "127.0.0.1:9001";
     let listener = TcpListener::bind(addr).await.expect("WebSocket sunucusu başlatılamadı!");
 
-    let user_repo = UserRepository::new(&mongo_client);
+    let user_repo = Arc::new(UserRepository::new(&mongo_client));
 
-    println!("WebSocket sunucusu {} adresinde çalışıyor", addr);
+    println!("WebSocket sunucusu {} adresinde çalışmaya başladı", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        let user_repo = user_repo.clone();  // Artık Clone trait'i olduğu için çalışacak
+        let user_repo = Arc::clone(&user_repo);
 
         tokio::spawn(async move {
             let ws_stream = match accept_async(stream).await {
                 Ok(ws) => ws,
-                Err(e) => {
-                    eprintln!("WebSocket bağlantısı sırasında hata oluştu: {:?}", e);
-                    return;
-                }
+                Err(_) => return,
             };
 
-            let (mut write, mut read) = ws_stream.split();  // split metodu burada artık çalışacak
+            let (write, mut read) = ws_stream.split();
+            let write = Arc::new(Mutex::new(write));
 
+            // İlk mesajı alarak telegram_id'yi belirle
+            let telegram_id = match read.next().await {
+                Some(Ok(msg)) => {
+                    if let Ok(text) = msg.into_text() {
+                        if let Ok(parsed_msg) = serde_json::from_str::<IncomingMessage>(&text) {
+                            parsed_msg.telegram_id
+                        } else {
+                            return;
+                        }
+                    } else {
+                        return;
+                    }
+                }
+                _ => return,
+            };
+
+            // Her saniye belirli `telegram_id` kullanıcısının verisini çekip gönderme
+            let user_repo_clone = Arc::clone(&user_repo);
+            let write_clone = Arc::clone(&write);
+            tokio::spawn(async move {
+                let mut interval = time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+
+                    if let Ok(Some(user)) = user_repo_clone.find_user_by_telegram_id(telegram_id).await {
+                        let response = json!({
+                            "telegram_id": user.telegram_id,
+                            "first_name": user.first_name,
+                            "last_name": user.last_name,
+                            "username": user.username,
+                            "photo_url": user.photo_url,
+                            "language_code": user.language_code,
+                            "hp": user.hp,
+                            "ton_amount": user.ton_amount,
+                            "wallet_address": user.wallet_address,
+                            "click_score": user.click_score,
+                            "click_power": user.click_power,
+                            "boost": user.boost,
+                            "references": user.references,
+                            "game_pass": user.game_pass,
+                            "reputation_points": user.reputation_points,
+                            "items": user.items,
+                            "friends": user.friends
+                        });
+                        if write_clone.lock().await.send(Message::text(response.to_string())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Diğer gelen mesajları işleme
             while let Some(message) = read.next().await {
                 match message {
                     Ok(msg) => {
@@ -42,51 +96,50 @@ pub async fn run_websocket_server(mongo_client: Client) {
                             
                             match incoming {
                                 Ok(msg) => {
-                                    let telegram_id = msg.telegram_id;
-                                    let click_power = msg.click_power.unwrap_or(0); // Gelen click_power yoksa varsayılan 0 olsun
+                                    let click_power = msg.click_power.unwrap_or(0);
 
-                                    if let Some(user) = user_repo.find_user_by_telegram_id(telegram_id).await.unwrap_or(None) {
-                                        // Eğer click_score ve click_power zaten i32 tipindeyse direkt kullan
-                                        let click_score = user.click_score; // Doğrudan i32 tipi
-                                        let click_power = user.click_power; // Doğrudan i32 tipi
-                                    
-                                        let response = json!({
-                                            "click_score": click_score,
-                                            "click_power": click_power,
-                                        });
-                                        write.send(response.to_string().into()).await.unwrap();
-                                    } else {
-                                        // Eğer kullanıcı bulunamazsa veya hata olursa mesaj döndür
-                                        let error_response = json!({
-                                            "error": "Kullanıcı bulunamadı veya eksik veri"
-                                        });
-                                        write.send(error_response.to_string().into()).await.unwrap();
+                                    match user_repo.find_user_by_telegram_id(telegram_id).await {
+                                        Ok(Some(user)) => {
+                                            let response = json!({
+                                                "click_score": user.click_score,
+                                                "click_power": user.click_power,
+                                            });
+                                            if write.lock().await.send(response.to_string().into()).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        _ => {
+                                            let error_response = json!({
+                                                "error": "Kullanıcı bulunamadı veya eksik veri"
+                                            });
+                                            if write.lock().await.send(error_response.to_string().into()).await.is_err() {
+                                                break;
+                                            }
+                                        }
                                     }
-                                    
 
-                                    // Kullanıcının click_score'unu güncelle
-                                    if let Some(updated_user) = user_repo.update_click_score(telegram_id, click_power).await.unwrap() {
+                                    if let Ok(Some(updated_user)) = user_repo.update_click_score(telegram_id, click_power).await {
                                         let updated_response = json!({
                                             "click_score": updated_user.click_score,
                                             "click_power": updated_user.click_power,
                                         });
-                                        write.send(updated_response.to_string().into()).await.unwrap();
+                                        if write.lock().await.send(updated_response.to_string().into()).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
-                                Err(err) => {
-                                    eprintln!("Mesaj parse edilemedi: {}", err);
+                                Err(_) => {
                                     let error_message = json!({
                                         "error": "Geçersiz mesaj formatı"
                                     });
-                                    write.send(error_message.to_string().into()).await.unwrap();
+                                    if write.lock().await.send(error_message.to_string().into()).await.is_err() {
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Mesaj okunurken hata oluştu: {:?}", e);
-                        break; // Hata oluştuğunda döngüden çıkıp bağlantıyı kapat
-                    }
+                    Err(_) => break,
                 }
             }
         });

@@ -1,3 +1,5 @@
+use core::fmt;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -22,4 +24,16 @@ pub enum GameState {
     Ready,    // Tüm oyuncular oturdu ve ödeme yaptı
     Started,  // Oyun başladı
     Completed // Oyun tamamlandı
+}
+
+impl fmt::Display for GameState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let state = match *self {
+            GameState::Waiting => "Waiting",
+            GameState::Ready => "Ready",
+            GameState::Started => "Started",
+            GameState::Completed => "Completed",
+        };
+        write!(f, "{}", state)
+    }
 }

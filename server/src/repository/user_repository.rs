@@ -20,17 +20,17 @@ impl UserRepository {
         match self.collection.find_one(filter, None).await {
             Ok(Some(user)) => {
                 // Eğer kullanıcı bulunduysa logla
-                eprintln!("Kullanıcı bulundu: {:?}", user);
+
                 Ok(Some(user))
             },
             Ok(None) => {
                 // Eğer kullanıcı bulunamadıysa logla
-                eprintln!("Kullanıcı bulunamadı: Telegram ID = {}", telegram_id);
+
                 Ok(None)
             },
             Err(err) => {
                 // Veritabanı hatası varsa logla
-                eprintln!("Kullanıcı bulunurken hata oluştu: {:?}", err);
+
                 Err(err)
             }
         }
@@ -39,13 +39,18 @@ impl UserRepository {
     
     pub async fn update_click_score(&self, telegram_id: i64, click_power: i32) -> Result<Option<User>> {
         let filter = doc! { "telegram_id": telegram_id };
-
+    
         if let Some(mut user) = self.collection.find_one(filter.clone(), None).await? {
-            user.click_score += click_power; // Tıklama puanını ekle
+            // Eğer click_score Some ise değeri güncelle, değilse click_power ile başlat
+            user.click_score = Some(user.click_score.unwrap_or(0) + click_power);
+    
+            // Veritabanında click_score'u güncelle
             self.collection.update_one(filter, doc! { "$set": { "click_score": user.click_score } }, None).await?;
+            
             Ok(Some(user))
         } else {
             Ok(None)
         }
     }
+    
 }
