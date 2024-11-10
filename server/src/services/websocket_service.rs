@@ -71,8 +71,6 @@ pub async fn run_websocket_server(mongo_client: Client) {
                             "hp": user.hp,
                             "ton_amount": user.ton_amount,
                             "wallet_address": user.wallet_address,
-                            "click_score": user.click_score,
-                            "click_power": user.click_power,
                             "boost": user.boost,
                             "references": user.references,
                             "game_pass": user.game_pass,
