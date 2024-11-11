@@ -10,8 +10,8 @@ use mongodb::bson::{Binary, Bson};
 use rocket::{http::Status, serde::{json::Json, Deserialize, Serialize}, State};
 use services::redis_service::setup_redis; 
 use rocket_db_pools::mongodb::Client;
-use repository::{market_repository::MarketRepository, salon_repository::SalonRepository, table_repository::TableRepository, user_repository::UserRepository};
-use models::{market::Market, salon::Salon, table::Table, user::{Item, ReferenceLevel, References, User}};
+use repository::{game_repository::GameRepository, market_repository::MarketRepository, salon_repository::SalonRepository, table_repository::TableRepository, user_repository::UserRepository};
+use models::{game::GameResult, market::Market, salon::Salon, table::Table, user::{Item, ReferenceLevel, References, User}};
 use rocket::{get, post, options, catch, catchers, routes};
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
@@ -63,6 +63,28 @@ pub struct TelegramId {
     pub telegram_id: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LeaderboardResponse {
+    pub hp: Vec<UserHpData>,
+    pub game: Vec<GameUserData>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserHpData {
+    pub telegram_id: i64,
+    pub hp: i32,
+    pub username: String,
+    pub photo_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GameUserData {
+    pub telegram_id: i64,
+    pub username: String,
+    pub wins: i32,
+    pub photo_url: String,
+}
+
 // Tüm kullanıcıları alma
 #[get("/users")]
 async fn get_all_users(user_repo: &rocket::State<UserRepository>) -> Json<ApiResponse<Vec<User>>> {
@@ -81,6 +103,81 @@ async fn get_all_users(user_repo: &rocket::State<UserRepository>) -> Json<ApiRes
         }),
     }
 }
+#[get("/get_leaderboard")]
+async fn get_leaderboard(
+    user_repo: &rocket::State<UserRepository>,
+    game_repo: &rocket::State<GameRepository>,
+) -> Json<ApiResponse<LeaderboardResponse>> {
+    // Kullanıcıları getir
+    let users_result = user_repo.get_all_users().await;
+
+    // Oyun sonuçlarını getir
+    let games_result = game_repo.get_all_games().await;
+
+    // Kullanıcıları ve oyun sonuçlarını işleyerek leaderboard yapısını oluştur
+    let leaderboard = match (users_result, games_result) {
+        (Ok(users), Ok(games)) => {
+            // Kullanıcı ID'sine göre kazanan kullanıcıların sayısını hesapla
+            let mut user_wins = std::collections::HashMap::new();
+            for game in games.iter() {
+                // Eğer winner_id "Disconnected" değilse, kazanan sayısını artır
+                if game.winner_id != "Disconnected" {
+                    if let Ok(winner_id) = game.winner_id.parse::<i64>() {
+                        *user_wins.entry(winner_id).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            // `hp` için kullanıcı verilerini hazırlayın
+            let hp_users: Vec<UserHpData> = users
+                .iter()
+                .map(|user| UserHpData {
+                    telegram_id: user.telegram_id,
+                    hp: user.hp.unwrap_or(0),
+                    username: user.username.clone().unwrap_or("Unknown".to_string()),
+                    photo_url: user.photo_url.clone().unwrap_or("Unknown".to_string()),
+                })
+                .collect();
+
+            // `game` için kazanan kullanıcı verilerini hazırlayın
+            let game_users: Vec<GameUserData> = games
+                .iter()
+                .filter_map(|game| {
+                    if game.winner_id != "Disconnected" {
+                        // `winner_id` bir i32'ye dönüşebilirse ve `telegram_id` ile eşleşirse
+                        if let Ok(winner_id) = game.winner_id.parse::<i64>() {
+                            users.iter().find(|user| user.telegram_id == winner_id).map(|user| GameUserData {
+                                telegram_id: user.telegram_id,
+                                username: user.username.clone().unwrap_or("Unknown".to_string()),
+                                wins: *user_wins.get(&winner_id).unwrap_or(&0),
+                                photo_url: user.photo_url.clone().unwrap_or("Unknown".to_string()),
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            Json(ApiResponse {
+                message: "200: Success".to_string(),
+                result: Some(LeaderboardResponse {
+                    hp: hp_users,
+                    game: game_users,
+                }),
+            })
+        }
+        _ => Json(ApiResponse {
+            message: "500: Internal Server Error".to_string(),
+            result: None,
+        }),
+    };
+
+    leaderboard
+}
+
 
 // Yeni kullanıcı oluşturma
 #[post("/users", format = "json", data = "<new_user>")]
@@ -195,6 +292,56 @@ async fn get_user_by_telegram_id(
                 message: format!("500: Internal Server Error - {:?}", e),
                 result: None,
             }))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateUserProfileRequest {
+    username: Option<String>,
+    photo_url: Option<String>,
+}
+
+#[post("/users/<telegram_id>", data = "<update_request>")]
+async fn update_user_profile(
+    user_repo: &State<UserRepository>,
+    telegram_id: i64,
+    update_request: Json<UpdateUserProfileRequest>,
+) -> (Status, Json<ApiResponse<String>>) {
+    let update_data = update_request.into_inner();
+
+    // Kullanıcı adı ve fotoğraf URL'si boşsa işlem yapma
+    if update_data.username.is_none() && update_data.photo_url.is_none() {
+        return (
+            Status::BadRequest,
+            Json(ApiResponse {
+                message: "400: Bad Request - No data provided for update".to_string(),
+                result: None,
+            }),
+        );
+    }
+
+    // Güncelleme işlemini gerçekleştir
+    match user_repo
+        .update_user_profile(telegram_id, update_data.username, update_data.photo_url)
+        .await
+    {
+        Ok(_) => (
+            Status::Ok,
+            Json(ApiResponse {
+                message: "200: Success - User profile updated".to_string(),
+                result: Some("Profile updated successfully".to_string()),
+            }),
+        ),
+        Err(e) => {
+            eprintln!("Error updating user profile: {:?}", e);
+            (
+                Status::InternalServerError,
+                Json(ApiResponse {
+                    message: format!("500: Internal Server Error - {:?}", e),
+                    result: None,
+                }),
+            )
         }
     }
 }
@@ -694,7 +841,7 @@ async fn convert(
             if let Some(current_click_score) = user.click_score {
                 if current_click_score >= click_score_to_reduce {
                     // click_score'u azalt ve hp'yi arttır
-                    let hp_increase = click_score_to_reduce / 1000;
+                    let hp_increase = click_score_to_reduce / 100;
                     user.hp = Some(user.hp.unwrap_or(0) + hp_increase);
                     user.click_score = Some(current_click_score - click_score_to_reduce);
 
@@ -1594,6 +1741,7 @@ async fn rocket() -> _ {
     let salon_repo = SalonRepository::new(&client);
     let table_repo = TableRepository::new(&client);
     let market_repo = MarketRepository::new(&client);
+    let game_repo = GameRepository::new(&client);
 
     let redis_conn = setup_redis().await.unwrap(); // Redis bağlantısını kur
     rocket::build()
@@ -1601,6 +1749,7 @@ async fn rocket() -> _ {
         .manage(salon_repo)  // SalonRepository'yi yönetin
         .manage(table_repo)  // TableRepository'yi yönetin
         .manage(market_repo)  // TableRepository'yi yönetin
+        .manage(game_repo) // GameRepository'yi yönetin
         .attach(CORS) // CORS fairing ekleniyor
         .mount("/", routes![
             get_all_users,
@@ -1626,7 +1775,9 @@ async fn rocket() -> _ {
             purchase_item,
             join_table_with_bots,
             ready_table_bots,
-            leave_table_bot
+            leave_table_bot,
+            get_leaderboard,
+            update_user_profile
         ])
         .register("/", catchers![not_found]) // 404 yakalayıcı
 }

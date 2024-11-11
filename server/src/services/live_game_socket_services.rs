@@ -391,7 +391,7 @@ async fn update_winner_ton_amount(mongo_client: &Client, winner_id: i64, amount_
     let collection: Collection<Document> = mongo_client.database("users").collection("users");
 
     let filter = doc! { "telegram_id": winner_id };
-    let update = doc! { "$inc": { "ton_amount": amount_to_add } };
+    let update = doc! { "$inc": { "hp": amount_to_add } };
 
     match collection.update_one(filter, update, None).await {
         Ok(_) => println!("Player {}'in ton_amount değeri başarıyla güncellendi. Eklenen miktar: {}", winner_id, amount_to_add),

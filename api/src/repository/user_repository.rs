@@ -377,5 +377,34 @@ impl UserRepository {
         self.collection.update_one(filter, update, None).await.map(|_| ())
     }
 
+    pub async fn update_user_profile(
+        &self,
+        telegram_id: i64,
+        new_username: Option<String>,
+        new_photo_url: Option<String>,
+    ) -> Result<()> {
+        let filter = doc! { "telegram_id": telegram_id };
+        
+        // Güncellenecek alanları oluşturuyoruz
+        let mut update_fields = doc! {};
+        if let Some(username) = new_username {
+            update_fields.insert("username", username);
+        }
+        if let Some(photo_url) = new_photo_url {
+            update_fields.insert("photo_url", photo_url);
+        }
+        
+        // Eğer güncellenecek alan yoksa, hiçbir işlem yapılmaz
+        if update_fields.is_empty() {
+            return Ok(());
+        }
+    
+        // Güncelleme komutunu oluşturuyoruz
+        let update = doc! { "$set": update_fields };
+    
+        // Güncelleme işlemini yapıyoruz
+        self.collection.update_one(filter, update, None).await.map(|_| ())
+    }
+
 
 }

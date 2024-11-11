@@ -11,7 +11,7 @@ use mongodb::bson::{doc, Document};
 use uuid::Uuid;
 use std::collections::HashMap;
 
-const MAX_ROLLS: usize = 5;
+const MAX_ROLLS: usize = 10;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Player {
@@ -152,7 +152,7 @@ async fn initialize_game(mongo_client: &Client, salon_id: &str, table_id: &str) 
         unique_key: unique_key.clone(),
     };
 
-    let collection: Collection<Document> = mongo_client.database("games").collection("live_games");
+    let collection: Collection<Document> = mongo_client.database("games").collection("live_games_bots");
     let doc = doc! {
         "game_id": &game_id,
         "salon_id": salon_id,
@@ -219,7 +219,7 @@ async fn handle_dice_roll<S>(
 
 
 async fn update_game_in_db(mongo_client: &Client, live_game: &LiveGame) {
-    let collection: Collection<Document> = mongo_client.database("games").collection("live_games");
+    let collection: Collection<Document> = mongo_client.database("games").collection("live_games_bots");
     let filter = doc! { "game_id": &live_game.game_id };
     let update = doc! { "$set": {
         "players": live_game.players.iter().map(|p| {
@@ -259,7 +259,7 @@ async fn check_winner<S>(
         remove_players_from_salon(mongo_client, &live_game.salon_id, &live_game.table_id).await;
 
         // LiveGame'yi veritabanından silin
-        let collection: Collection<Document> = mongo_client.database("games").collection("live_games");
+        let collection: Collection<Document> = mongo_client.database("games").collection("live_games_bots");
         let _ = collection.delete_one(doc! { "game_id": &live_game.game_id }, None).await;
 
         let key = (live_game.salon_id.clone(), live_game.table_id.clone());
@@ -268,7 +268,7 @@ async fn check_winner<S>(
 }
 
 async fn save_game_result_to_db(game_id: &str, winner_id: &str, players: &[Player], mongo_client: &Client) {
-    let collection: Collection<Document> = mongo_client.database("games").collection("game_results");
+    let collection: Collection<Document> = mongo_client.database("games").collection("game_results_bots");
 
     let result_doc = doc! {
         "game_id": game_id.to_string(),
