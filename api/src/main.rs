@@ -1749,7 +1749,6 @@ async fn rocket() -> _ {
         .manage(table_repo)  // TableRepository'yi yönetin
         .manage(market_repo)  // TableRepository'yi yönetin
         .manage(game_repo) // GameRepository'yi yönetin
-        .attach(TelegramAuthFairing::new(bot_token)) 
         .attach(CORS) // CORS fairing ekleniyor
         .mount("/", routes![
             get_all_users,
