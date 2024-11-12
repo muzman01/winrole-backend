@@ -17,6 +17,9 @@ futures = "0.3"
 redis = { version = "0.23", features = ["tokio-comp", "aio"] } # Asenkron özellikler için gerekli yapılandırma
 uuid = { version = "1.1", features = ["v4"] }
 rand = "0.8"
+hmac = "0.12.1"            # HMAC kütüphanesi
+sha2 = "0.10.6"            # SHA-256 algoritması için kütüphane
+digest = "0.10.7" 
 
 [dev-dependencies]
 reqwest = { version = "0.11", features = ["json", "blocking"] }

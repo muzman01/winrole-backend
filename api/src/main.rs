@@ -8,7 +8,7 @@ mod services;
 use rand::Rng;
 use mongodb::bson::{Binary, Bson};
 use rocket::{http::Status, serde::{json::Json, Deserialize, Serialize}, State};
-use services::redis_service::setup_redis; 
+use services::{redis_service::setup_redis, telegram_auth_fairing::TelegramAuthFairing}; 
 use rocket_db_pools::mongodb::Client;
 use repository::{game_repository::GameRepository, market_repository::MarketRepository, salon_repository::SalonRepository, table_repository::TableRepository, user_repository::UserRepository};
 use models::{game::GameResult, market::Market, salon::Salon, table::Table, user::{Item, ReferenceLevel, References, User}};
@@ -1736,13 +1736,12 @@ fn not_found(req: &Request) -> Json<ApiResponse<String>> {
 async fn rocket() -> _ {
     let client = Client::with_uri_str("mongodb://localhost:27017").await.unwrap();
     let user_repo = UserRepository::new(&client);
-
+    let bot_token = "7066575107:AAExt9HNG6kR7_vYy4O8CovqAyLIJsD3E3o";
     // Salon ve Table repository'lerini burada oluşturup yönetin
     let salon_repo = SalonRepository::new(&client);
     let table_repo = TableRepository::new(&client);
     let market_repo = MarketRepository::new(&client);
     let game_repo = GameRepository::new(&client);
-
     let redis_conn = setup_redis().await.unwrap(); // Redis bağlantısını kur
     rocket::build()
         .manage(user_repo)
@@ -1750,6 +1749,7 @@ async fn rocket() -> _ {
         .manage(table_repo)  // TableRepository'yi yönetin
         .manage(market_repo)  // TableRepository'yi yönetin
         .manage(game_repo) // GameRepository'yi yönetin
+        .attach(TelegramAuthFairing::new(bot_token)) 
         .attach(CORS) // CORS fairing ekleniyor
         .mount("/", routes![
             get_all_users,

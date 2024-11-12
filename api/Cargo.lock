@@ -163,7 +163,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "digest",
  "futures",
+ "hmac",
  "jsonwebtoken",
  "mongodb",
  "rand",
@@ -173,6 +175,7 @@ dependencies = [
  "rocket_db_pools",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
